@@ -110,10 +110,13 @@ jobs:
         id: cabal-store
         shell: bash
         run: |
+          echo '${{ runner.os }}'
           if [[ '${{ runner.os }}' != 'Windows' ]]; then
-            echo "cabal-store=C:\\cabal\\store" >> $GITHUB_OUTPUT
-          else
+            echo "not windows"
             echo "cabal-store=/home/runner/.cabal/store" >> $GITHUB_OUTPUT
+          else
+            echo "is windows"
+            echo "cabal-store=C:\\cabal\\store" >> $GITHUB_OUTPUT
           fi
 
       - name: "[PowerShell] Add build script path"
@@ -157,7 +160,7 @@ jobs:
         name: Cache
         with:
           path: |
-            ${{ steps.cabal-store-cabal.outputs.cabal-store }}
+            ${{ steps.cabal-store.outputs.cabal-store }}
             dist-newstyle
           key:          ${{ runner.os }}-${{ matrix.ghc }}-cabal-${{ hashFiles('cabal.project.freeze') }}
           restore-keys: ${{ runner.os }}-${{ matrix.ghc }}-cabal-
@@ -169,6 +172,13 @@ jobs:
       - name: Build
         run: |
           cabal build all
+
+      - name: Inspect store
+        if: always()
+        shell: bash
+        run: |
+          echo "== "'${{ steps.cabal-store.outputs.cabal-store }}'" =="
+          find '${{ steps.cabal-store.outputs.cabal-store }}'
 
       # - name: Setup tmate session
       #   uses: mxschmitt/action-tmate@v3
