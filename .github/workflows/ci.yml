@@ -63,11 +63,6 @@ jobs:
               mingw-w64-x86_64-libsodium `
               mingw-w64-x86_64-openssl `
               mingw-w64-x86_64-zlib `
-              base-devel `
-              autoconf-wrapper `
-              autoconf `
-              automake `
-              libtool `
               make
 
       - uses: actions/checkout@v3
