@@ -111,7 +111,7 @@ Library
 
   if flag(portable) || os(windows)
     cpp-options: -DPORTABLE
-    build-depends: time-locale-compat == 0.1.*
+    build-depends: time-locale-compat
   else
     c-sources: cbits/timefuncs.c
     include-dirs: cbits
@@ -216,7 +216,7 @@ Test-suite testsuite
 
   if flag(portable) || os(windows)
     cpp-options: -DPORTABLE
-    build-depends: time-locale-compat == 0.1.*
+    build-depends: time-locale-compat
   else
     c-sources: cbits/timefuncs.c
     include-dirs: cbits

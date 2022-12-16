@@ -26,6 +26,7 @@ jobs:
     runs-on: ${{ matrix.os }}
 
     strategy:
+      fail-fast: false
       matrix:
         os: [ubuntu-latest]
         cabal: ["3.8.1.0"]
@@ -37,32 +38,123 @@ jobs:
           - "9.2.5"
           - "9.4.3"
         include:
-          - { os: macOS-latest,   ghc: "9.4.2", cabal: "3.8.1.0" }
-          - { os: windows-latest, ghc: "9.4.2", cabal: "3.8.1.0" }
+          - { os: macOS-latest,   ghc: "9.2.5", cabal: "3.8.1.0" }
+          - { os: macOS-latest,   ghc: "9.4.3", cabal: "3.8.1.0" }
+
+          - { os: windows-latest, ghc: "9.2.5", cabal: "3.8.1.0" }
+          - { os: windows-latest, ghc: "9.4.3", cabal: "3.8.1.0" }
+
+    env:
+      # OpenSSL is installed in a non-standard location in MacOS. See
+      # https://github.com/actions/virtual-environments/blob/main/images/macos/macos-11-Readme.md
+      PKG_CONFIG_PATH: ${{ (matrix.os == 'macos-latest' && '/usr/lib/pkgconfig:/usr/local/opt/openssl@1.1/lib/pkgconfig') || (matrix.os == 'ubuntu-latest' && '/usr/lib/pkgconfig:/usr/local/lib/pkgconfig') || '' }}
+
+      # FIXME: this is arguably a bug, and pkg-config should return the right values!
+      LD_LIBRARY_PATH: ${{ (matrix.os != 'windows-latest' && '/usr/local/lib') || '' }}
 
     steps:
+      - name: "WIN: Install System Dependencies via pacman (msys2)"
+        if: runner.os == 'Windows'
+        run: |
+          # ghcup should be installed on current GHA Windows runners. Let's use ghcup to run
+          # pacman, to install the necessary dependencies, ...
+          ghcup run -- pacman --noconfirm -S `
+              mingw-w64-x86_64-pkg-config `
+              mingw-w64-x86_64-libsodium `
+              mingw-w64-x86_64-openssl `
+              mingw-w64-x86_64-zlib `
+              make
+
       - uses: actions/checkout@v3
 
+      # this seems to break something. It _must_ come after the pacman setup
+      # above. It appears as if PATHEXT is set _after_ ghcup install ghc/cabal, and
+      # as such we'd need pacman.exe instead.
       - name: Setup Haskell
-        uses: haskell/actions/setup@v2.0
-        id: setup-haskell-cabal
-        with:
-          ghc-version: ${{ matrix.ghc }}
-          cabal-version: ${{ matrix.cabal }}
+        run: |        
+          # Use GHCUP to manage ghc/cabal
+          ghcup install ghc --set ${{ matrix.ghc }}
+          ghcup install cabal --set 3.6.2.0
+
+          ghc --version
+          cabal --version
+
+      - name: "WIN: fixup cabal config"
+        if: runner.os == 'Windows'
+        run: |
+          # make sure cabal knows about msys64, and mingw64 tools. Not clear why C:/cabal/config is empty
+          # and C:/cabal doesn't even exist.  The ghcup bootstrap file should have create it in the image:
+          # See https://github.com/haskell/ghcup-hs/blob/787edc17af4907dbc51c85e25c490edd8d68b80b/scripts/bootstrap/bootstrap-haskell#L591
+          # So we'll do it by hand here for now.
+          #
+          # We'll _not_ add extra-include-dirs, or extra-lib-dirs, and rely on what's shipped with GHC.
+          # https://github.com/msys2/MINGW-packages/issues/10837#issuecomment-1047105402
+          # https://gitlab.haskell.org/ghc/ghc/-/issues/21111
+          # if we _do_ want them, this would be the lines to add below
+
+          $ghcMingwDir = Join-Path -Path $(ghc --print-libdir) `
+                                  -ChildPath ../mingw/x86_64-*-mingw32/lib/ `
+                                  -Resolve
+
+          cabal user-config -a "extra-prog-path: C:/msys64/mingw64/bin, C:/msys64/usr/bin" `
+                            -a "extra-include-dirs: C:/msys64/mingw64/include" `
+                            -a ("extra-lib-dirs: {0}, C:/msys64/mingw64/lib" -f $ghcMingwDir) `
+                            -f init
+
+      - name: "[PowerShell] Add build script path"
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: Add-Content $env:GITHUB_PATH "$(pwd)/.github/bin"
+
+      - name: "MAC: Install build environment (for secp256k1)"
+        if: runner.os == 'macOS'
+        run: brew install autoconf automake libtool
+
+      - name: Cabal update
+        run: cabal update
+
+      - name: Setup cabal project
+        run: |
+          cp .github/workflows/cabal.project.local .
+
+      - name: "Setup cabal-store"
+        id: cabal-store
+        shell: bash
+        run: |
+          if [[ '${{ runner.os }}' != 'Windows' ]]; then
+            echo "not windows"
+            echo "cabal-store=$(dirname "$(cabal help user-config | tail -n 1 | xargs)")/store" >> $GITHUB_OUTPUT
+          else
+            echo "is windows"
+            echo "cabal-store=C:\\cabal\\store" >> $GITHUB_OUTPUT
+          fi
+
+      - name: pkg-config list
+        run: pkg-config --list-all
 
       - name: Configure
         run: |
           cabal configure --enable-tests --enable-benchmarks --enable-documentation --test-show-details=direct --write-ghc-environment-files=always
+          cabal build all --only-dependencies --dry-run
 
-      - name: Freeze
-        run: |
-          cabal freeze
+      - name: Cabal cache over S3
+        uses: action-works/cabal-cache-s3@v1
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        with:
+          region: us-west-2
+          dist-dir: dist-newstyle
+          store-path: ${{ steps.cabal-store.outputs.cabal-store }}
+          threads: 16
+          archive-uri: ${{ secrets.BINARY_CACHE_URI }}
+          skip: "${{ secrets.BINARY_CACHE_URI == '' }}"
 
       - uses: actions/cache@v3
         name: Cache
         with:
           path: |
-            ${{ steps.setup-haskell-cabal.outputs.cabal-store }}
+            ${{ steps.cabal-store.outputs.cabal-store }}
             dist-newstyle
           key:          ${{ runner.os }}-${{ matrix.ghc }}-cabal-${{ hashFiles('cabal.project.freeze') }}
           restore-keys: ${{ runner.os }}-${{ matrix.ghc }}-cabal-
@@ -74,6 +166,19 @@ jobs:
       - name: Build
         run: |
           cabal build all
+
+      - name: Inspect store
+        if: always()
+        shell: bash
+        run: |
+          echo "== "'${{ steps.cabal-store.outputs.cabal-store }}'" =="
+          find '${{ steps.cabal-store.outputs.cabal-store }}'
+
+      # - name: Setup tmate session
+      #   uses: mxschmitt/action-tmate@v3
+      #   if: always()
+      #   with:
+      #     limit-access-to-actor: true
 
       - name: Test
         # Some tests fail with \r\n line endings.
@@ -90,6 +195,7 @@ jobs:
     runs-on: ubuntu-latest
 
     strategy:
+      fail-fast: false
       matrix:
         include:
           # GHC version must match https://www.stackage.org/nightly
