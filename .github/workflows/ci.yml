@@ -106,19 +106,6 @@ jobs:
                             -a ("extra-lib-dirs: {0}, C:/msys64/mingw64/lib" -f $ghcMingwDir) `
                             -f init
 
-      - name: "Setup cabal-store"
-        id: cabal-store
-        shell: bash
-        run: |
-          echo '${{ runner.os }}'
-          if [[ '${{ runner.os }}' != 'Windows' ]]; then
-            echo "not windows"
-            echo "cabal-store=/home/runner/.cabal/store" >> $GITHUB_OUTPUT
-          else
-            echo "is windows"
-            echo "cabal-store=C:\\cabal\\store" >> $GITHUB_OUTPUT
-          fi
-
       - name: "[PowerShell] Add build script path"
         if: runner.os == 'Windows'
         shell: pwsh
@@ -134,6 +121,18 @@ jobs:
       - name: Setup cabal project
         run: |
           cp .github/workflows/cabal.project.local .
+
+      - name: "Setup cabal-store"
+        id: cabal-store
+        shell: bash
+        run: |
+          if [[ '${{ runner.os }}' != 'Windows' ]]; then
+            echo "not windows"
+            echo "cabal-store=$(dirname "$(cabal help user-config | tail -n 1 | xargs)")/store" >> $GITHUB_OUTPUT
+          else
+            echo "is windows"
+            echo "cabal-store=C:\\cabal\\store" >> $GITHUB_OUTPUT
+          fi
 
       - name: pkg-config list
         run: pkg-config --list-all
